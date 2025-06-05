@@ -1,5 +1,7 @@
+import os
+SECRET_KEY = os.getenv("SECRET_KEY")
 ROOT_URLCONF = 'voicebot.urls'
-SECRET_KEY = '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'
+
 INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
