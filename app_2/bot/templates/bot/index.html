@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>VoiceBot Realtime</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      padding: 2rem;
+      background: #f8f9fa;
+    }
+    #output {
+      white-space: pre-wrap;
+      background: #fff;
+      padding: 1rem;
+      border: 1px solid #ccc;
+      min-height: 100px;
+      margin-top: 1rem;
+    }
+    button {
+      margin-right: 10px;
+      padding: 0.5rem 1rem;
+    }
+  </style>
+</head>
+<body>
+  <h1>🎙️ VoiceBot Realtime Transcription</h1>
+  <button id="start">Start</button>
+  <button id="stop">Stop</button>
+
+  <div id="output"></div>
+<script>
+let recorder, audioContext, socket;
+
+document.getElementById("start").onclick = async () => {
+  console.log("Start button clicked");
+
+  try {
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    console.log("Microphone access granted");
+
+    const input = audioContext.createMediaStreamSource(stream);
+
+    recorder = new Recorder(input, {
+      numChannels: 1,
+      sampleRate: 16000
+    });
+    recorder.record();
+    console.log("Recording started");
+
+    socket = new WebSocket("ws://" + window.location.host + "/ws/voice/");
+    socket.onopen = () => console.log("WebSocket opened");
+    socket.onmessage = (e) => {
+      const data = JSON.parse(e.data);
+      console.log("Transcript:", data.transcript);
+      document.getElementById("output").textContent += data.transcript + "\n";
+    };
+    socket.onerror = (e) => console.error("WebSocket error:", e);
+
+    window.interval = setInterval(() => {
+      recorder.exportWAV(blob => {
+        console.log("Sending audio chunk...");
+        if (socket.readyState === 1) {
+          socket.send(blob);
+        }
+        recorder.clear();
+      });
+    }, 2000);
+
+  } catch (err) {
+    console.error("Failed to start recording:", err);
+  }
+};
+
+document.getElementById("stop").onclick = () => {
+  console.log("Stop button clicked");
+  clearInterval(window.interval);
+  recorder.stop();
+  socket.close();
+};
+</script>
+
+  <!-- Include Recorder.js -->
+  <script>
+    /**
+     * Simple Recorder.js implementation
+     * (Inline minified version if CDN not used)
+     */
+    class Recorder {
+      constructor(source, config = {}) {
+        const { numChannels = 1, sampleRate = 16000 } = config;
+        this.context = source.context;
+        this.node = this.context.createScriptProcessor(4096, numChannels, numChannels);
+        this.buffer = [];
+        this.recording = false;
+
+        this.node.onaudioprocess = (e) => {
+          if (!this.recording) return;
+          const input = e.inputBuffer.getChannelData(0);
+          this.buffer.push(new Float32Array(input));
+        };
+
+        source.connect(this.node);
+        this.node.connect(this.context.destination);
+        this.sampleRate = sampleRate;
+      }
+
+      record() {
+        this.buffer = [];
+        this.recording = true;
+      }
+
+      stop() {
+        this.recording = false;
+      }
+
+      clear() {
+        this.buffer = [];
+      }
+
+      exportWAV(cb) {
+        const buffer = this.flattenArray(this.buffer);
+        const dataview = this.encodeWAV(buffer);
+        const audioBlob = new Blob([dataview], { type: "audio/wav" });
+        cb(audioBlob);
+      }
+
+      flattenArray(buffer) {
+        const length = buffer.reduce((acc, cur) => acc + cur.length, 0);
+        const result = new Float32Array(length);
+        let offset = 0;
+        for (const chunk of buffer) {
+          result.set(chunk, offset);
+          offset += chunk.length;
+        }
+        return result;
+      }
+
+      encodeWAV(samples) {
+        const buffer = new ArrayBuffer(44 + samples.length * 2);
+        const view = new DataView(buffer);
+        const writeString = (offset, str) => {
+          for (let i = 0; i < str.length; i++) {
+            view.setUint8(offset + i, str.charCodeAt(i));
+          }
+        };
+
+        const sampleRate = this.sampleRate;
+        const numChannels = 1;
+        const bitsPerSample = 16;
+
+        writeString(0, 'RIFF');
+        view.setUint32(4, 36 + samples.length * 2, true);
+        writeString(8, 'WAVE');
+        writeString(12, 'fmt ');
+        view.setUint32(16, 16, true);
+        view.setUint16(20, 1, true);
+        view.setUint16(22, numChannels, true);
+        view.setUint32(24, sampleRate, true);
+        view.setUint32(28, sampleRate * numChannels * bitsPerSample / 8, true);
+        view.setUint16(32, numChannels * bitsPerSample / 8, true);
+        view.setUint16(34, bitsPerSample, true);
+        writeString(36, 'data');
+        view.setUint32(40, samples.length * 2, true);
+
+        // Write PCM samples
+        let offset = 44;
+        for (let i = 0; i < samples.length; i++, offset += 2) {
+          const s = Math.max(-1, Math.min(1, samples[i]));
+          view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+        }
+
+        return view;
+      }
+    }
+  </script>
+
+  <!-- Your app logic -->
+  <script>
+    let recorder, audioContext, socket;
+
+    document.addEventListener("DOMContentLoaded", () => {
+      document.getElementById("start").onclick = async () => {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const input = audioContext.createMediaStreamSource(stream);
+
+        recorder = new Recorder(input, {
+          numChannels: 1,
+          sampleRate: 16000
+        });
+
+        recorder.record();
+
+        socket = new WebSocket("ws://" + window.location.host + "/ws/voice/");
+        socket.onmessage = (e) => {
+          const data = JSON.parse(e.data);
+          document.getElementById("output").textContent += data.transcript + "\n";
+        };
+
+        window.interval = setInterval(() => {
+          recorder.exportWAV(blob => {
+            if (socket.readyState === 1) {
+              socket.send(blob);
+            }
+            recorder.clear();
+          });
+        }, 2000);
+      };
+
+      document.getElementById("stop").onclick = () => {
+        clearInterval(window.interval);
+        if (recorder) recorder.stop();
+        if (socket) socket.close();
+      };
+    });
+  </script>
+</body>
+</html>
+
+
